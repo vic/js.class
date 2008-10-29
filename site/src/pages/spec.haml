@@ -1,0 +1,148 @@
+:textitle
+  h3. @JS.Spec@
+  
+  @JS.Spec@ is a minimalist Behaviour Driven Development framework built on
+  top of @JS.Class@. It depends only on @JS.Class@ core and can be used even
+  on environments without a web-browser.
+  
+  h3. Loading needed files
+
+  To use @JS.Spec@ you only need to require @class.js@, @enumerable.js@ and
+  @spec.js@ itself.
+
+  If you are using @JS.Class@ from the command line with a JavaScript
+  interpreter like @spidermonkey@, @rhino@, or @V8@, you need to load
+  these files using the @load()@ function, like:
+
+  <pre class="prettyprint">
+    load("js.class/class.js");
+    load("js.class/enumerable.js");
+    load("js.class/spec.js");
+  </pre>
+ 
+  h3. Example specification
+
+  <pre class="prettyprint">
+    with( new JS.Spec() ) {
+
+       describe("JSlikeRuby", function() {
+
+          it("supports pending examples like this");
+
+          it("uses rspec like syntax", function() {
+             ( 1 ).should( be(1) ); // test for object identity ===
+          });
+
+          describe("nested group", function() {
+
+            // to include helper methods on this group:
+            include(MyHelperMethods);
+            // or 
+            include({ hello : function() { return "hello"; } });
+
+            it("has hello in this group and its childs", function() {
+               hello().should( match(/hell/) );
+            });
+
+            // you can also define a single method like..
+            def('bye', function() { return "adios"; });
+
+          });
+
+       });
+    }
+  </pre>
+  
+
+  h3. Before/After hooks
+
+  You can define before/after hooks in @JS.Class@ to create the env needed by
+  your tests. When you define helper methods or before/after hooks, they are
+  actually defined on a mixin that is included on each example instance, this
+  means that examples don't share state (instance variables) with others.
+ 
+  <pre class="prettyprint">
+     describe("before and after hooks", function() {
+
+         before('each', function() {
+            this.foo = "Run on every instance before the example is executed";
+         });
+
+         before(/only examples matching this pattern/, function() { });
+
+         describe("sub", function() {
+
+            before('each', function() {
+              return "run in order but only for examples in this group";
+            });
+
+         });
+     });
+  </pre>
+  
+  h3. Running the suite
+
+  To run the suite you can use the @runner@ method. This method takes a
+  list of configuration objects, one for each output format. 
+  Currently @JS.Spec@ only suports @specdoc@ console output similar to 
+  the one provided by @RSpec@. The console attribute must be a function
+  used to print to the terminal.
+
+  <pre class="prettyprint">
+    var suite = new JS.Spec(); // or cached from somewhere else
+    suite.runner({format : 'specdoc', console : print, color : true})();
+  </pre>
+ 
+  h3. Creating your own spec matchers.
+  
+  The following example shows the implementation for the @be@ matcher method.
+  This class inherits from the @JS.Spec.Matcher@ class to be auto registered.
+
+  <pre class="prettyprint">
+   JS.Spec.Matcher.Be = new JS.Class(JS.Spec.Matcher, {
+     extend : { matcher : 'be' }, // this is the method name
+
+     init_matcher : function(expected) {
+       this._expected = expected;
+     },
+
+     matches : function (target) {
+       this._target = target;
+       return this._expected === target;
+     },
+
+     failure_message : function() {
+      return "Expected "+this._target+" to be "+this._expected;
+     },
+
+     negative_failure_message : function() {
+       return "Not expected "+this._target+" to be "+this._expected;
+     }
+   });
+  </pre>
+  
+
+  h3. Creating output formatters
+
+  You can create your own output formatters, for example if you want to 
+  create an ajax based runner. You just need to implement the callbacks:
+
+  <pre class="prettyprint">
+   JS.Spec.Listener.AjaxFormatter = new JS.Class(JS.Spec.Listener, {
+     extend : { format : 'ajax' }, // the format in the config object.
+     initialize : function() { this.callSuper(); }
+     onStart : function() { "Running examples..."; },
+     onEnd : function() { "Time to generate the report.."; },
+     onGroupStart : function(exampleInstance) { },
+     onGroupEnd : function(exampleInstance) { },
+     onExampleStart : function(exampleInstance) { },
+     onExampleSuccess : function(exampleInstance) { },
+     onExamplePending : function(exampleInstance) { },
+     onExampleFailure : function(exampleInstance, failure) { },
+     onExampleError : function(exampleInstance, exception) { },
+   });
+
+   // the configuration object attributes are copied to an instance of
+   // the matching formatter class.
+   suite.runner({format : 'ajax', el: 'spec' })(/just examples matching/); 
+  </pre>  
