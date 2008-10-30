@@ -109,16 +109,16 @@ JS.Spec = new JS.Class({
 
     applyBody : function(self, body, args) {
       if (body) {
-        var fun = eval("function() { with(this) { return ("+
-                       body.toString()+").apply(this, arguments); } }");
-        args = args || [self];
-        return fun.apply(self, args);
+        var str = "(function() { with(this) { return ("+
+                    body+").apply(this, arguments); } })";
+        var fun = eval(str);
+        fun.apply(self, args || [self]);
       }
       return undefined;
     }
   },
   initialize : function(body) {
-    this._root = new JS.Spec.ExampleGroup('', undefined);
+    this._root = new JS.Spec.ExampleGroup();
     if (body) {
       JS.Spec.applyBody(this, body);
     }
@@ -307,9 +307,10 @@ JS.Spec.Example = new JS.Class({
     })
   },
 
-  initialize : function(name, group) {
+  initialize : function(name, group, body) {
     this._name = name;
     this._group = group;
+    this._body = body;
   },
 
   name : function() {
@@ -334,27 +335,26 @@ JS.Spec.Example = new JS.Class({
  * An example group created with "describe" method.
  */
 JS.Spec.ExampleGroup = new JS.Class({
-  initialize : function(name, body, parent) {
+  initialize : function(name, parent, mixin) {
     this._name = name;
     this._parent = parent;
     this._examples = {};
     this._examples_ord = [];
     this._module = new JS.Module({
-      include : JS.Spec.Matcher.Methods
+      include : [JS.Spec.Matcher.Methods, mixin,
+                 parent ? parent._module : {},
+                 new JS.Module({
+                   before : function() { this.callSuper(); },
+                   after : function() { this.callSuper(); }
+                 })]
     });
-    if (parent) { this.include(parent._module); }
-    this.include(new JS.Module({
-      before : function() { this.callSuper(); },
-      after : function() { this.callSuper(); }
-    }));
-    JS.Spec.applyBody(this, body);
   },
 
   def : function(name, fun) {
     if (fun)  {
       var obj = {};
       obj[name] = fun;
-      this._module.include(obj);
+      this._module.include(new JS.Module(obj));
     } else {
       this._module.include.apply(this._module, [name]);
     }
@@ -366,7 +366,7 @@ JS.Spec.ExampleGroup = new JS.Class({
   },
 
   name : function() {
-    if (this._parent) {
+    if (this._parent && this._parent._name) {
       return this._parent.name() + ' ' + this._name;
     } else {
       return this._name;
@@ -405,32 +405,63 @@ JS.Spec.ExampleGroup = new JS.Class({
 
   it : function(name, body) {
     var example = this._examples[name];
-    if (!example) {
-      example = new JS.Spec.Example(name, this);
+    if (example) {
+        throw "Cannot define example '"+name+"' more than once.";
+    } else {
+      example = new JS.Spec.Example(name, this, body);
       this._examples[name] = example;
       this._examples_ord.push(name);
     }
-    if (example.body()) {
-      throw "Cannot define example '"+example.name()+"' more than once.";
-    }
-    example.body(body);
     return example;
   },
 
   describe : function() {
     this._child_groups = this._child_groups || {};
     this._child_groups_ord = this._child_groups_ord || [];
-    var args = JS.array(arguments);
-    var body;
-    if (JS.isFn(args[args.length - 1])) { body = args.pop(); }
-    var first = args.shift().toString();
-    var name = new JS.Enumerable.Collection(args).
-      inject(first, function(s, i){ return s + " " + i.toString(); });
+    var name = "";
+    var mixin = new JS.Module();
+    var body = new JS.Module({ body : function() { this.callSuper(); } });
+    new JS.Enumerable.Collection(arguments).forEach(function(arg) {
+      if (typeof(arg) == 'string') {
+        name = (name + ' ' + arg).replace(/^\s+|\s+$/g, '');
+      } else if (typeof(arg) == 'function') {
+        var fun = arg;
+        body.include(new JS.Module({
+          body : function() {
+            this.callSuper();
+            JS.Spec.applyBody(this, fun);
+          }
+        }));
+      } else if (arg.constructor == Object) {
+        body.include(new JS.Module({
+          body : function() {
+            this.callSuper();
+            for (var name in arg) {
+              if (typeof(name) == 'string' &&
+                  name.match(/\s/) && JS.isFn(arg[name])) {
+                this.it(name, arg[name]);
+              }
+            }
+          }
+        }));
+      } else {
+        mixin.include(arg);
+      }
+    });
+    if (name.length == 0) {
+      name = (this.name +
+              ' Anonymous example_group_'+
+              this._child_groups.length).replace(/^\s+|\s+$/g, '');
+    }
     var group = this._child_groups[name];
-    if (!group) {
-      group = new JS.Spec.ExampleGroup(name , body, this);
+    if (group) {
+      throw "Already defined group: "+name;
+    } else {
+      group = new JS.Spec.ExampleGroup(name, this, mixin);
       this._child_groups[name] = group;
       this._child_groups_ord.push(name);
+      group.extend(body);
+      group.body();
     }
     return group;
   }
@@ -459,18 +490,13 @@ JS.Spec.Runner = new JS.Class({
     filter = filter || /.?/;
     var groups_seen = {};
     var self = this;
-    var current_group;
     self.notify('onStart');
     this.trasverse_examples(this._root, filter, function(instance) {
       var group_name = instance.example().group().name();
       if (!groups_seen[group_name]) {
-        groups_seen[group_name] = true;
-        if (current_group && current_group != group_name) {
-          self.notify('onGroupEnd', instance);
-        }
-        current_group = group_name;
         self.notify('onGroupStart', instance);
       }
+      groups_seen[group_name] = instance;
       if (instance.example()._body) {
         try {
           self.notify('onExampleStart', instance);
@@ -486,22 +512,31 @@ JS.Spec.Runner = new JS.Class({
       } else {
         self.notify('onExamplePending', instance);
       }
-    });
+    }, null, function(endingGroup) {
+      if (groups_seen[endingGroup.name()]) {
+        self.notify("onGroupEnd", groups_seen[endingGroup.name()]);
+      }
+    }) ;
     self.notify('onEnd');
   },
-  trasverse_examples : function(root, filter, callback) {
+  trasverse_examples : function(root, filter, each, start, end) {
+    var len = (root._examples_ord ? root._examples_ord.length : 0) +
+              (root._child_groups_ord ? root._child_groups_ord.length : 0);
+    if (len == 0) { return; }
+    if (start) { start(root); }
     new JS.Enumerable.Collection(root._examples_ord).forEach(function(i) {
       var mod = root._examples[i];
       if (mod.name().match(filter)) {
         var example = new JS.Spec.Example.Instance(mod);
-        callback(example);
+        each(example);
       }
     });
     var self = this;
     new JS.Enumerable.Collection(root._child_groups_ord).forEach(function(i) {
       var grp = root._child_groups[i];
-      self.trasverse_examples(grp, filter, callback);
+      self.trasverse_examples(grp, filter, each, start, end);
     });
+    if (end) { end(root); }
   }
 });
 
@@ -524,7 +559,18 @@ JS.Spec.Listener = new JS.Class({
     inherited : function(sub) {
       if (sub.format) { this[sub.format] = sub; }
     }
-  }
+  },
+
+  onStart : function() { },
+  onEnd : function() { },
+  onGroupStart : function(instance) { },
+  onGroupEnd : function(instance) { },
+  onExampleStart : function(instance) {},
+  onExampleSuccess : function(instance) { },
+  onExamplePending : function(instance) { },
+  onExampleFailure : function(instance, failure) { },
+  onExampleError : function(instance, error) { }
+
 });
 
 /**
@@ -652,6 +698,59 @@ JS.Spec.Listener.ConsoleSpecdoc = new JS.Class(JS.Spec.Listener, {
   }
 
 });
+
+JS.Spec.Listener.Firebug = new JS.Class(JS.Spec.Listener, {
+  extend : { format : 'firebug' },
+
+  initialize : function(config) {
+    this._examples = 0;
+    this._failures = 0;
+    this._pending = 0;
+  },
+
+  onStart : function() {
+    console.time("JS.Spec ran in");
+  },
+  onEnd : function() {
+    console.log(this._examples, "examples,",
+                this._failures, "failures,",
+                this._pending, "pending");
+    console.timeEnd("JS.Spec ran in");
+  },
+  onGroupStart : function(instance) {
+    console.group(instance.example().group()._name);
+  },
+  onGroupEnd : function(instance) {
+    console.groupEnd();
+  },
+  onExampleStart : function(instance) {
+    this._examples += 1;
+  },
+  onExampleSuccess : function(instance) {
+    console.log(instance.example()._name, instance.example()._body);
+  },
+  onExamplePending : function(instance) {
+    this._pending += 1;
+    console.info(instance.example()._name,
+                 "(PENDING: Not Yet Impelemnted)");
+  },
+  onExampleFailure : function(instance, failure) {
+    this._failures += 1;
+    console.error(instance.example()._name,
+                  instance.example()._body,
+                  'FAILED: ', failure);
+
+  },
+  onExampleError : function(instance, error) {
+    this._failures += 1;
+    console.error(instance.example()._name,
+                  instance.example()._body,
+                  'ERROR: ', error);
+
+  }
+
+});
+
 
 /**
  * TODO:
