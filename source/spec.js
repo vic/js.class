@@ -708,50 +708,52 @@ JS.Spec.Listener.Firebug = new JS.Class(JS.Spec.Listener, {
   extend : { format : 'firebug' },
 
   initialize : function(config) {
+    this.callSuper();
     this._examples = 0;
     this._failures = 0;
     this._pending = 0;
+    this.firebug = this.firebug || window.top.console;
   },
 
   onStart : function() {
-    console.time("JS.Spec ran in");
+    this.firebug.time("JS.Spec ran in");
   },
   onEnd : function() {
-    console.log(this._examples, "examples,",
-                this._failures, "failures,",
-                this._pending, "pending");
-    console.timeEnd("JS.Spec ran in");
+    this.firebug.log(this._examples, "examples,",
+                     this._failures, "failures,",
+                     this._pending, "pending");
+    this.firebug.timeEnd("JS.Spec ran in");
   },
   onGroupStart : function(instance) {
-    console.group(instance.example().group()._name);
+    this.firebug.group(instance.example().group()._name);
   },
   onGroupEnd : function(instance) {
-    console.groupEnd();
+    this.firebug.groupEnd();
   },
   onExampleStart : function(instance) {
     this._examples += 1;
   },
   onExampleSuccess : function(instance) {
-    console.log(instance.example()._name, instance.example()._body);
+    this.firebug.log(instance.example()._name, instance.example()._body);
   },
   onExamplePending : function(instance) {
     this._pending += 1;
-    console.info(instance.example()._name +
-                 "(PENDING: Not Yet Impelemnted)");
+    this.firebug.info(instance.example()._name +
+                      "(PENDING: Not Yet Impelemnted)");
   },
   onExampleFailure : function(instance, failure) {
     this._failures += 1;
-    console.error(instance.example()._name,
-                  instance.example()._body,
-                  'FAILED: ', failure);
+    this.firebug.error(instance.example()._name,
+                       instance.example()._body,
+                       'FAILED: ', failure);
 
 
   },
   onExampleError : function(instance, error) {
     this._failures += 1;
-    console.error(instance.example()._name,
-                  instance.example()._body,
-                  'ERROR: ', error);
+    this.firebug.error(instance.example()._name,
+                       instance.example()._body,
+                       'ERROR: ', error);
 
   }
 
