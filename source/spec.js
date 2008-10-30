@@ -20,7 +20,6 @@
  * THE SOFTWARE.
  */
 
-
 /**
  * The JS.Spec class provides a minimalist bdd framework built with JS.Class
  *
@@ -115,6 +114,26 @@ JS.Spec = new JS.Class({
         fun.apply(self, args || [self]);
       }
       return undefined;
+    },
+
+    testType : function(obj, types) {
+      types = types.constructor == Array ? types : [types];
+      return new JS.Enumerable.Collection(types).find(function(type) {
+        return obj.constructor == type || typeof(obj) == type ||
+          obj instanceof type ||
+          (JS.isFn(obj['isA']) && obj.isA(type));
+      });
+    },
+
+    expect : function(subject, expectation, positive) {
+      if (positive == undefined) { positive = true; }
+      var res = expectation.matches(subject);
+      if (res != positive) {
+        var msg = positive ? expectation.failureMessage() :
+                    expectation.negativeFailureMessage();
+        throw new JS.Spec.ExampleFailure(msg, positive, expectation);
+      }
+      return res;
     }
   },
   initialize : function(body) {
@@ -164,127 +183,113 @@ JS.Spec.ExampleFailure = new JS.Class({
  */
 JS.extend(Object.prototype, {
   should : function(expectation) {
-    if (!expectation.matches(this)) {
-      throw new JS.Spec.ExampleFailure(expectation.failure_message(),
-                                       true, expectation);
-    }
+    JS.Spec.expect(this, expectation, true);
   },
   should_not : function(expectation) {
-    if (expectation.matches(this)) {
-      throw new JS.Spec.ExampleFailure(expectation.negative_failure_message(),
-                                       false, expectation);
-    }
+    JS.Spec.expect(this, expectation, false);
   }
 });
-
 
 /***
- * The base matcher class
- */
-JS.Spec.Matcher = new JS.Class({
-  initialize : function(example) {
-    this._example = example;
-  },
-  example : function() {
-    return this._example;
-  },
-  init_matcher : function() {
-    throw "init_matcher Not Implemented";
-  },
-  extend : {
-    register : function(name, cls) {
-      var obj = {};
-      var self = this;
-      obj[name] = function() {
-        var matcher = new cls(self);
-        matcher.init_matcher.apply(matcher, arguments);
-        return matcher;
-      };
-      JS.Spec.Matcher.Methods.include(obj);
-    },
-    inherited : function(sub) {
-      if (sub.matcher) { this.register(sub.matcher, sub); }
-    }
-  }
-});
-
-
-/**
  * This module is included on every example instance,
- * matchers inheriting JS.Spec.Matcher get registered
- * as instance methods in this module.
+ * matchers registered with JS.Spec.Matches.register method
+ * get added as an instance method in this module.
  */
-JS.Spec.Matcher.Methods = new JS.Module({
-
+JS.Spec.Matches = new JS.Module({
+  extend : {
+    Base : new JS.Class({
+      matches: function() {
+        throw "matches method Not Implemented";
+      },
+      failureMessage: function() {
+        return 'expected '+this.subject+' to '+this.act()+' '+this.expected;
+      },
+      negativeFailureMessage: function() {
+        return 'expected '+this.subject+' not to '+
+          this.act()+' '+this.expected;
+      },
+      act : function() {
+        return this.matcher.replace(/([a-z])([A-Z])/, "$1 $2").
+          toLowerCase().replace(/\W+/, " ");
+      },
+      testType: JS.Spec.testType
+    }),
+    matchers: {},
+    register : function(object, name, matchFun) {
+      var self = this;
+      if (object.constructor === Object) { // a config object
+        var mod = new JS.Module(object);
+        if (object.matcher.constructor === String) {
+          name = object.matcher;
+          matchFun = object[name] || object['matches'];
+          self.register(mod, name, matchFun);
+        } else if (object.matcher.constructor === Array) {
+          for (var i = 0; i < object.matcher.length; i++) {
+            name = object.matcher[i];
+            if (JS.isFn(object[name])) {
+              self.register(mod, name, object[name]);
+            } else if (JS.isFn(object['matches'])) {
+              self.register(mod, name, object['matches']);
+            } else {
+              throw "No matches method defined for "+name;
+            }
+          }
+        } else if (object.matcher.constructor === Object) {
+          for (name in object.matcher) {
+            matchFun = object.matcher[name];
+            if (typeof(matchFun) == 'string') { // an alias
+              matchFun = object.matcher[matchFun];
+            }
+            if (JS.isFn(matchFun) && !Object.prototype[name]) {
+              self.register(mod, name, matchFun);
+            }
+          }
+        } else {
+          throw "Invalid object matcher type: "+typeof(object);
+        }
+      } else if (object.constructor === JS.Module) {
+        matchFun = matchFun || object.instanceMethod('matches');
+        if (!name) {
+          throw "A method name must be provided to register a matcher";
+        }
+        if (!JS.isFn(matchFun)) {
+          throw "No matches function supplied to register matcher: "+name;
+        }
+        self.register(new JS.Class(self.Base, {
+          include : object,
+          matcher : name,
+          matches: function(subject) {
+            this.subject = subject;
+            this.expected = this._argv[0];
+            var ary = JS.array(this._argv);
+            ary.unshift(subject);
+            var value = matchFun.apply(this, ary);
+            value = this == value ? value.result() : value;
+            //console.debug("%o.%s(%o) = %o", this, this.matcher, ary, value);
+            return value;
+          }
+        }), name);
+      } else {
+        if (!JS.isFn(object)) {
+          throw "Expected a constructor function to be register as matcher";
+        }
+        if (!name) {
+          throw "A method name must be provided to register a matcher";
+        }
+        var config = new Object();
+        config[name] = function() {
+          var matcher = object.prototype.constructor.
+            apply(object.prototype , arguments);
+          matcher._example = this;
+          matcher._argv = JS.array(arguments);
+          return matcher;
+        };
+        self.include(new JS.Module(config));
+      }
+    }
+  },
+  expect : JS.Spec.expect
 });
-
-/****************
- * The matchers
- ****************/
-JS.Spec.Matcher.Be = new JS.Class(JS.Spec.Matcher, {
-  extend : { matcher : 'be' },
-
-  init_matcher : function(expected) {
-    this._expected = expected;
-  },
-
-  matches : function (target) {
-    this._target = target;
-    return this._expected === target;
-  },
-
-  failure_message : function() {
-    return "Expected "+this._target+" to be "+this._expected;
-  },
-
-  negative_failure_message : function() {
-    return "Not expected "+this._target+" to be "+this._expected;
-  }
-});
-
-JS.Spec.Matcher.Equal = new JS.Class(JS.Spec.Matcher, {
-  extend : { matcher : 'equal' },
-
-  init_matcher : function(expected) {
-    this._expected = expected;
-  },
-
-  matches : function (target) {
-    this._target = target;
-    return this._expected == target;
-  },
-
-  failure_message : function() {
-    return "Expected "+this._target+" to equal "+this._expected;
-  },
-
-  negative_failure_message : function() {
-    return "Not expected "+this._target+" to equal "+this._expected;
-  }
-});
-
-
-JS.Spec.Matcher.Match = new JS.Class(JS.Spec.Matcher, {
-  extend : { matcher : 'match' },
-
-  init_matcher : function(pattern) {
-    this._pattern = pattern;
-  },
-
-  matches : function (target) {
-    this._target = target;
-    return target.matches(this._pattern);
-  },
-
-  failure_message : function() {
-    return "Expected "+this._target+" to match "+this._pattern;
-  },
-
-  negative_failure_message : function() {
-    return "Not expected "+this._target+" to match "+this._pattern;
-  }
-});
-
 
 /**
  * An example within an ExampleGroup, created by "it" method.
@@ -341,24 +346,13 @@ JS.Spec.ExampleGroup = new JS.Class({
     this._examples = {};
     this._examples_ord = [];
     this._module = new JS.Module({
-      include : [JS.Spec.Matcher.Methods, mixin,
+      include : [JS.Spec.Matches, mixin,
                  parent ? parent._module : {},
                  new JS.Module({
                    before : function() { this.callSuper(); },
                    after : function() { this.callSuper(); }
                  })]
     });
-  },
-
-  def : function(name, fun) {
-    if (fun)  {
-      var obj = {};
-      obj[name] = fun;
-      this._module.include(new JS.Module(obj));
-    } else {
-      this._module.include.apply(this._module, [name]);
-    }
-    return this;
   },
 
   include : function() {
@@ -404,9 +398,17 @@ JS.Spec.ExampleGroup = new JS.Class({
   },
 
   it : function(name, body) {
+    if (!body && name.constructor == Object) {
+      for(var i in name) {
+        if (JS.isFn(name[i]) && !Object.prototype[i]) {
+          this.it(i, name[i]);
+        }
+      }
+      return this;
+    }
     var example = this._examples[name];
     if (example) {
-        throw "Cannot define example '"+name+"' more than once.";
+      throw "Cannot define example '"+name+"' more than once.";
     } else {
       example = new JS.Spec.Example(name, this, body);
       this._examples[name] = example;
@@ -449,9 +451,7 @@ JS.Spec.ExampleGroup = new JS.Class({
       }
     });
     if (name.length == 0) {
-      name = (this.name +
-              ' Anonymous example_group_'+
-              this._child_groups.length).replace(/^\s+|\s+$/g, '');
+      throw "A name must be given for the example group";
     }
     var group = this._child_groups[name];
     if (group) {
@@ -699,6 +699,11 @@ JS.Spec.Listener.ConsoleSpecdoc = new JS.Class(JS.Spec.Listener, {
 
 });
 
+/**
+ * A firebug based reporter. Using firebug instead of generating DOM
+ * has the advantage that you can test your pages without altering the
+ * DOM being tested.
+ */
 JS.Spec.Listener.Firebug = new JS.Class(JS.Spec.Listener, {
   extend : { format : 'firebug' },
 
@@ -731,7 +736,7 @@ JS.Spec.Listener.Firebug = new JS.Class(JS.Spec.Listener, {
   },
   onExamplePending : function(instance) {
     this._pending += 1;
-    console.info(instance.example()._name,
+    console.info(instance.example()._name +
                  "(PENDING: Not Yet Impelemnted)");
   },
   onExampleFailure : function(instance, failure) {
@@ -739,6 +744,7 @@ JS.Spec.Listener.Firebug = new JS.Class(JS.Spec.Listener, {
     console.error(instance.example()._name,
                   instance.example()._body,
                   'FAILED: ', failure);
+
 
   },
   onExampleError : function(instance, error) {
@@ -750,6 +756,206 @@ JS.Spec.Listener.Firebug = new JS.Class(JS.Spec.Listener, {
   }
 
 });
+
+
+/*************************************
+ * Match methods provided by JS.Spec *
+ *************************************/
+JS.Spec.Matches.register({
+  matcher : {
+
+    /**
+     * object equality
+     *
+     *  obj.should_not( be( undefined ) )
+     */
+    be : function(a, b) { return a === b; },
+    eql : 'equal', // alias for equal
+    equal : function(a, b) { return a == b; },
+    beLessThan : function(a, b) { return a < b; },
+    beLessOrEqualThan : function(a, b) { return a <= b; },
+    beGreaterThan : function(a, b) { return a > b; },
+    beGreaterOrEqualThan : function(a, b) { return a >= b; },
+
+
+    /**
+     * object type
+     *
+     *   obj.should( beKindOf(JS.Enumerable, JS.Kernel) )
+     */
+    beKindOf : function(object, type) {
+      return (JS.isFn(object['isA']) && object.isA(type)) ||
+        object.prototype.constructor === type;
+    },
+    beA : 'beKindOf',
+    beAn : 'beKindOf',
+
+    /**
+     * Object interface
+     *
+     *   obj.should( implement(new JS.Interface("hello", "world")) )
+     */
+    respondTo : function() {
+      var ary = JS.array(arguments);
+      var object = ary.shift();
+      return new JS.Interface(ary).test(object);
+    },
+    implement: function(object, iface) {
+      return iface.test(object);
+    },
+
+
+    /**
+     * Test if object satisfies a block
+     *
+     *    obj.should( satisfy(function(o) { return o % 2 == 0 }) )
+     */
+    satisfy : function() {
+      var args = JS.array(arguments);
+      var object = args.shift();
+      var block = args.shift();
+      args.unshift(object);
+      return block.apply(object, args);
+    }
+
+  }
+});
+
+/**
+ * "str".should( match(/regex/) )
+ * be(undefined).should( match(this.obj) )
+ */
+JS.Spec.Matches.register({
+  matcher: 'match',
+  match : function(subject, expect) {
+    if (subject.constructor === String) {
+      return subject.match(expect);
+    } else if (JS.isFn(subject['matches'])) {
+      return subject.matches(expect);
+    } else if (JS.isFn(expect['match'])) {
+      return expect.match(subject);
+    } else if (JS.isFn(expect['matches'])) {
+      return expect.matches(subject);
+    } else {
+      return "Don't know how to match "+subject+" with "+expect;
+    }
+  }
+});
+
+
+/**
+ * [1, 2, 3].should( include(1,3) )
+ */
+JS.Spec.Matches.register({
+  matcher: 'include',
+  include : function() {
+    var args = JS.array(arguments);
+    this.expected = args;
+    var subject = args.shift();
+    if (subject.constructor === Array) {
+      subject = new JS.Enumerable.Collection(subject);
+    }
+    return new JS.Enumerable.Collection(args).all(function(i) {
+      return subject.find(function(o) { return o == i; });
+    });
+  },
+  act: function() {
+    return 'include elements ';
+  }
+});
+
+
+/**
+ * (11).should beClose(10, 0.5)
+ */
+JS.Spec.Matches.register({
+  matcher: {
+    beClose : function(target, expected, delta) {
+      this._delta = delta || 0;
+      return (target - expected).abs() < delta;
+    }
+  },
+  failureMessage: function() {
+    return "expected " + this.expected +
+      " +/- (< " + this._delta + "), got " + this.subject;
+  },
+  negativeFailureMessage: function() {
+    return "expected " + this.subject +
+      " not to be within " + this._delta + " of " + this.expected;
+  }
+});
+
+
+/**
+ * fun.change(object, property).from(old).to(new)
+ * fun.change(object, property).by(amount)
+ * fun.change(object, property).byAtLeast(amount)
+ * fun.change(object, property).byAtMost(amount)
+ */
+JS.Spec.Matches.register({
+  matcher : 'change',
+  change : function(fun, obj, property, args) {
+    var self = this;
+    this.result = function() {
+      var before = obj[property];
+      if (JS.isFn(before) && args) {
+        before = before.apply(obj, args);
+      }
+      fun.apply(self._obj, self._args);
+      var after = obj[property];
+      if (JS.isFn(after) && args) {
+        after = after.apply(obj, args);
+      }
+      self._prop = property;
+      self._before = before;
+      self._after = after;
+      if (self._from && before != self._from) { return false; }
+      if (self._by && !self._by(after, before)) { return false; }
+      if (self._to && after != self._to) { return false; }
+      return true;
+    };
+    return this;
+  },
+  from : function(from) {
+    this._from = from;
+    return this;
+  },
+  to : function(to) {
+    this._to = to;
+    return this;
+  },
+  by : function(by) {
+    this._byTx = 'by '+by;
+    this._by = function(a, b) { return (a - b) == by; };
+    return this;
+  },
+  byAtLeast : function(by) {
+    this._byTx = 'by at least '+by;
+    this._by = function(a, b) { return (a - b) >= by; };
+    return this;
+  },
+  byAtMost : function(by) {
+    this._byTx = 'by at most '+by;
+    this._by = function(a, b) { return (a - b) <= by; };
+    return this;
+  },
+  after : function() {
+    this._args = JS.array(arguments);
+    return this;
+  },
+  on : function(object) {
+    this._obj = object;
+    return this;
+  },
+  act: function() {
+    var s = 'change value of '+this._prop;
+    if (this._from) { s += ' from '+this._from; }
+    if (this._to) { s += ' to '+this._to; }
+    if (this._by) { s += this._byTx; }
+    s += ' but it changed from '+this._before+' to '+this._after+' in ';
+  }
+});
+
 
 
 /**
