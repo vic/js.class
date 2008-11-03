@@ -9,7 +9,7 @@ JS.extend(JS.Module.prototype, {
     this.__res__ = options._resolve || null;
     this.include(methods || {});
   },
-  
+
   define: function(name, func, options) {
     options = options || {};
     this.__fns__[name] = func;
@@ -18,18 +18,43 @@ JS.extend(JS.Module.prototype, {
     var i = this.__dep__.length;
     while (i--) this.__dep__[i].resolve();
   },
-  
+
   instanceMethod: function(name) {
     var method = this.lookup(name).pop();
     return JS.isFn(method) ? method : null;
   },
-  
+
+  instanceMethods: function(includeSuper) {
+    typeof(includeSuper) === 'undefined' && (includeSuper = true);
+    var names = [];
+    var seen = {};
+    var addNames = function(mod) {
+      for (var name in mod.__mod__.__fns__) {
+        !seen[name] &&
+          typeof(name) === 'string' &&
+          JS.isFn(mod.__mod__.__fns__[name]) &&
+          (seen[name] = true) &&
+          names.push(name);
+      }
+      if (includeSuper) {
+        var ancestors = mod.ancestors();
+        for (var i = 0, n = ancestors.length; i < n; i++) {
+          if (seen[ancestors[i]]) continue;
+          seen[ancestors[i]] = true;
+          addNames(ancestors[i]);
+        }
+      }
+    };
+    addNames(this);
+    return names;
+  },
+
   include: function(module, options, resolve) {
     if (!module) return resolve && this.resolve();
     options = options || {};
     var inc = module.include, ext = module.extend, modules, i, n, method,
         includer = options._included || this;
-    
+
     if (module.__inc__ && module.__fns__) {
       this.__inc__.push(module);
       module.__dep__.push(this);
@@ -58,9 +83,9 @@ JS.extend(JS.Module.prototype, {
         return includer.include(module, options, resolve);
       }
     }
-    resolve && this.resolve();
+    return resolve && this.resolve();
   },
-  
+
   includes: function(moduleOrClass) {
     if (Object === moduleOrClass || this === moduleOrClass || this.__res__ === moduleOrClass.prototype)
       return true;
@@ -71,17 +96,18 @@ JS.extend(JS.Module.prototype, {
     }
     return false;
   },
-  
+
   ancestors: function(results) {
     results = results || [];
     for (var i = 0, n = this.__inc__.length; i < n; i++)
       this.__inc__[i].ancestors(results);
     var klass = (this.__res__||{}).klass,
         result = (klass && this.__res__ === klass.prototype) ? klass : this;
-    if (JS.indexOf(results, result) === -1) results.push(result);
+    result !== JS.MethodMissing && // avoid processing missing methods
+      JS.indexOf(results, result) === -1 && results.push(result);
     return results;
   },
-  
+
   lookup: function(name) {
     var ancestors = this.ancestors(), results = [], i, n, method;
     for (i = 0, n = ancestors.length; i < n; i++) {
@@ -90,7 +116,7 @@ JS.extend(JS.Module.prototype, {
     }
     return results;
   },
-  
+
   make: function(name, func) {
     if (!JS.isFn(func) || !JS.callsSuper(func)) return func;
     var module = this;
@@ -98,38 +124,48 @@ JS.extend(JS.Module.prototype, {
       return module.chain(this, name, arguments);
     };
   },
-  
+
   chain: JS.mask( function(self, name, args) {
     var callees = this.lookup(name),
         stackIndex = callees.length - 1,
         currentSuper = self.callSuper,
         params = JS.array(args),
         result;
-    
+
+    var noMoreSuper = function() {
+      var methodMissing = JS.Kernel.instanceMethod('methodMissing');
+      if (methodMissing === self.methodMissing)
+        throw "No superclass method `"+name+"' on "+self.inspect();
+      else
+        return self.methodMissing(name, params);
+    };
+
     self.callSuper = function() {
-      var i = arguments.length;
+      var i = arguments.length, superFun, returnValue;
       while (i--) params[i] = arguments[i];
       stackIndex -= 1;
-      var returnValue = callees[stackIndex].apply(self, params);
+      superFun = callees[stackIndex];
+      if (superFun) returnValue = superFun.apply(self, params);
+      else returnValue = noMoreSuper();
       stackIndex += 1;
       return returnValue;
     };
-    
+
     result = callees.pop().apply(self, params);
     currentSuper ? self.callSuper = currentSuper : delete self.callSuper;
     return result;
   } ),
-  
+
   resolve: function(target) {
     var target = target || this, resolved = target.__res__, i, n, key, made;
-    
+
     if (target === this) {
       i = this.__dep__.length;
       while (i--) this.__dep__[i].resolve();
     }
-    
+
     if (!resolved) return;
-    
+
     for (i = 0, n = this.__inc__.length; i < n; i++)
       this.__inc__[i].resolve(target);
     for (key in this.__fns__) {

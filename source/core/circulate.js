@@ -1,3 +1,6 @@
+JS.Kernel.__inc__.unshift(JS.MethodMissing);
+JS.MethodMissing.__dep__.push(JS.Kernel);
+
 JS.Module = JS.extend(new JS.Class(JS.Module.prototype), JS.Kernel.__fns__);
 JS.Module.include(JS.Kernel);
 JS.Class = JS.extend(new JS.Class(JS.Module, JS.Class.prototype), JS.Kernel.__fns__);
@@ -13,5 +16,9 @@ JS.Module.extend({
     var obs = this._observers, i = obs.length;
     while (i--) obs[i][0].call(obs[i][1] || null, name, object);
   }
+});
+
+JS.Module.methodAdded(function(name) {
+  JS.MethodMissing.addMethod(name);
 });
 
